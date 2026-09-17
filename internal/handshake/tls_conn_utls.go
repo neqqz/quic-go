@@ -4,10 +4,8 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 
 	utls "github.com/metacubex/utls"
 	"github.com/sagernet/quic-go/quicvarint"
@@ -103,17 +101,7 @@ func patchClientRandomFromKeyShare(conn *utls.UQUICConn, spec *utls.ClientHelloS
 	if keyShareExt == nil {
 		return errors.New("quic: ClientRandomPrefixBind: spec has no KeyShareExtension")
 	}
-	// TEMP DIAGNOSTIC LOGGING — remove once confirmed working end to end.
-	// Compare the "keyShare=" line here against the server's "extracted
-	// key_share=" line for the SAME connection attempt: they must be
-	// byte-for-byte identical, or DeriveRotatingRandomPrefixBound on the
-	// two ends won't agree and the handshake fails closed.
-	for i, ks := range keyShareExt.KeyShares {
-		fmt.Fprintf(os.Stderr, "[randbind][client] KeyShares[%d]: group=0x%04x data_len=%d data=%s\n",
-			i, uint16(ks.Group), len(ks.Data), hex.EncodeToString(ks.Data))
-	}
 	keyShare := serializeKeyShares(keyShareExt.KeyShares)
-	fmt.Fprintf(os.Stderr, "[randbind][client] serialized keyShare (%d bytes)=%s\n", len(keyShare), hex.EncodeToString(keyShare))
 	prefix := bind(keyShare)
 	if len(prefix) == 0 {
 		return errors.New("quic: ClientRandomPrefixBind returned no bytes")
@@ -121,10 +109,7 @@ func patchClientRandomFromKeyShare(conn *utls.UQUICConn, spec *utls.ClientHelloS
 	if len(prefix) > 32 {
 		prefix = prefix[:32]
 	}
-	fmt.Fprintf(os.Stderr, "[randbind][client] computed prefix=%s (patching into Random, was=%s)\n",
-		hex.EncodeToString(prefix), hex.EncodeToString(hello.Random[:len(prefix)]))
 	copy(hello.Random, prefix)
-	fmt.Fprintf(os.Stderr, "[randbind][client] Random after patch=%s\n", hex.EncodeToString(hello.Random))
 	return nil
 }
 
