@@ -169,6 +169,7 @@ func populateConfig(config *Config) *Config {
 		ChromeParrot:                     config.ChromeParrot,
 		ClientRandomPrefix:               config.ClientRandomPrefix,
 		ClientRandomMask:                 config.ClientRandomMask,
+		ClientRandomPrefixBind:           config.ClientRandomPrefixBind,
 		ServerClientRandomPrefix:         config.ServerClientRandomPrefix,
 		ServerClientRandomMask:           config.ServerClientRandomMask,
 		ServerClientRandomVerify:         config.ServerClientRandomVerify,

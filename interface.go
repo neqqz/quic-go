@@ -210,15 +210,42 @@ type Config struct {
 	// by a client. ClientRandomMask optionally selects which bits are replaced; a
 	// missing mask means all bits. This applies to both the standard TLS client and
 	// ChromeParrot.
+	//
+	// Ignored when ClientRandomPrefixBind is set.
 	ClientRandomPrefix []byte
 	ClientRandomMask   []byte
 
+	// ClientRandomPrefixBind, when set, replaces the full 32-byte ClientHello
+	// random with its return value, computed from this handshake's own
+	// key_share extension bytes (wire format, i.e. the concatenated
+	// group+length+key_exchange entries with the 2-byte list-length prefix
+	// stripped) — letting the caller bind the random to a value only this
+	// specific ClientHello could have produced, instead of a value that's
+	// identical (and therefore replayable into a different handshake) for
+	// every client within whatever rotation window it's generated from. See
+	// ServerClientRandomVerify above for the matching server-side check.
+	//
+	// ChromeParrot only: it goes through uTLS, which exposes the generated
+	// key_share before the ClientHello is sent (see internal/handshake/
+	// tls_conn_utls.go). The standard (non-ChromeParrot) TLS client has no
+	// equivalent hook — crypto/tls's QUIC integration doesn't expose the
+	// ClientHello for inspection between key_share generation and send, only
+	// a Rand override that fires before key_share exists yet — so for that
+	// path ClientRandomPrefixBind is silently ignored; use ClientRandomPrefix
+	// there instead.
+	ClientRandomPrefixBind func(keyShare []byte) []byte
+
 	// ServerClientRandomPrefix and ServerClientRandomMask validate the leading
 	// bytes of an incoming TLS ClientHello random. ServerClientRandomVerify, when
-	// set, takes precedence and receives the complete 32-byte random.
+	// set, takes precedence and receives the complete 32-byte random plus the
+	// raw ClientHello handshake message bytes it was extracted from (Initial
+	// encryption level, as delivered to the crypto stream — no QUIC or TLS
+	// record framing, just the handshake header onward), so a verifier can bind
+	// its check to other fields of this specific handshake (e.g. key_share) and
+	// not just the random bytes, which are visible to any passive observer.
 	ServerClientRandomPrefix []byte
 	ServerClientRandomMask   []byte
-	ServerClientRandomVerify func(random [32]byte) bool
+	ServerClientRandomVerify func(random [32]byte, clientHello []byte) bool
 
 	// ExtraPacketPaddingMin and ExtraPacketPaddingMax add a random number of
 	// PADDING bytes to outgoing packets when room is available.

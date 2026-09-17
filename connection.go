@@ -503,6 +503,7 @@ var newClientConnection = func(
 		s.config.ChromeParrot,
 		s.config.ClientRandomPrefix,
 		s.config.ClientRandomMask,
+		s.config.ClientRandomPrefixBind,
 		s.config.ServerClientRandomPrefix,
 		s.config.ServerClientRandomMask,
 		s.config.ServerClientRandomVerify,

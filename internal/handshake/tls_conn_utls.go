@@ -3,8 +3,11 @@ package handshake
 import (
 	"context"
 	"crypto/tls"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 
 	utls "github.com/metacubex/utls"
 	"github.com/sagernet/quic-go/quicvarint"
@@ -29,7 +32,22 @@ var _ tlsQUICConn = (*utlsQUICConn)(nil)
 // own SessionState with unexported internals, so a uTLS session cannot be
 // converted into the *tls.SessionState the resumption path expects. The events
 // are turned off at the source rather than half-supported.
-func newUTLSQUICClient(tlsConf *tls.Config) (*utlsQUICConn, error) {
+//
+// clientRandomPrefixBind, when non-nil, is called right after ApplyPreset with
+// this handshake's own key_share bytes (wire format) and its return value
+// overwrites the full 32-byte ClientHello.random in place. This has to happen
+// here rather than via the ClientRandomPrefix/Rand-wrapping mechanism because
+// that mechanism fires on the first Rand read — before ApplyPreset has
+// generated key_share — so it has nothing to bind to yet. ApplyPreset itself
+// only populates uconn.HandshakeState.Hello (Random, KeyShares, ...); it does
+// not marshal ClientHello.Raw or mark the client-hello build as complete, so
+// patching Random here is a normal field write, not something the internal
+// handshake machinery has already moved past — the real marshal happens
+// later, when Start below actually kicks off the handshake, and reads
+// whatever is in Hello.Random at that point (ApplyPreset special-cases an
+// already-32-byte Random as "keep it" rather than regenerating it, which is
+// what makes patching it here stick — see its "case 32" branch).
+func newUTLSQUICClient(tlsConf *tls.Config, clientRandomPrefixBind func(keyShare []byte) []byte) (*utlsQUICConn, error) {
 	uConf, err := utlsConfigFromStd(tlsConf)
 	if err != nil {
 		return nil, err
@@ -40,7 +58,92 @@ func newUTLSQUICClient(tlsConf *tls.Config) (*utlsQUICConn, error) {
 	if err := conn.ApplyPreset(spec); err != nil {
 		return nil, fmt.Errorf("applying Chrome ClientHello spec: %w", err)
 	}
+	if clientRandomPrefixBind != nil {
+		if err := patchClientRandomFromKeyShare(conn, spec, clientRandomPrefixBind); err != nil {
+			return nil, err
+		}
+	}
 	return &utlsQUICConn{conn: conn, spec: spec}, nil
+}
+
+// patchClientRandomFromKeyShare overwrites conn's ClientHello.random with
+// bind(key_share), where key_share is this handshake's own key_share
+// extension body in wire format — the same format
+// common/tls/utls_client.go's serializeKeyShares produces for the TCP path,
+// reimplemented here rather than imported to avoid pulling sing-box's
+// common/tls package into this quic-go fork. If either side's format ever
+// drifts, DeriveRotatingRandomPrefixBound on the two ends stops agreeing and
+// every handshake using rotation fails closed (see ServerClientRandomVerify)
+// rather than silently accepting an unbound value — this is deliberately not
+// a fallback-to-unbound path.
+//
+// Reads the generated key share from spec's own *utls.KeyShareExtension,
+// NOT from conn.HandshakeState().Hello.KeyShares — the latter is only
+// synced from the extension by (*UConn).ApplyConfig(), which ApplyPreset
+// does not call; ApplyConfig only runs later, as part of the real
+// handshake's buildHandshakeState(), by which point it's too late to affect
+// what we bind Random to. spec.Extensions, on the other hand, holds the
+// exact same *KeyShareExtension object ApplyPreset generated real key
+// material into in place (uconn.Extensions is a shallow copy of
+// spec.Extensions — same pointers, confirmed by reading ApplyPreset's own
+// source), so it already has the real Data at this point, no separate sync
+// step needed.
+func patchClientRandomFromKeyShare(conn *utls.UQUICConn, spec *utls.ClientHelloSpec, bind func(keyShare []byte) []byte) error {
+	hello := conn.HandshakeState().Hello
+	if hello == nil || len(hello.Random) != 32 {
+		return errors.New("quic: ClientRandomPrefixBind: ClientHello not built (no Random) after ApplyPreset")
+	}
+	var keyShareExt *utls.KeyShareExtension
+	for _, ext := range spec.Extensions {
+		if ks, ok := ext.(*utls.KeyShareExtension); ok {
+			keyShareExt = ks
+			break
+		}
+	}
+	if keyShareExt == nil {
+		return errors.New("quic: ClientRandomPrefixBind: spec has no KeyShareExtension")
+	}
+	// TEMP DIAGNOSTIC LOGGING — remove once confirmed working end to end.
+	// Compare the "keyShare=" line here against the server's "extracted
+	// key_share=" line for the SAME connection attempt: they must be
+	// byte-for-byte identical, or DeriveRotatingRandomPrefixBound on the
+	// two ends won't agree and the handshake fails closed.
+	for i, ks := range keyShareExt.KeyShares {
+		fmt.Fprintf(os.Stderr, "[randbind][client] KeyShares[%d]: group=0x%04x data_len=%d data=%s\n",
+			i, uint16(ks.Group), len(ks.Data), hex.EncodeToString(ks.Data))
+	}
+	keyShare := serializeKeyShares(keyShareExt.KeyShares)
+	fmt.Fprintf(os.Stderr, "[randbind][client] serialized keyShare (%d bytes)=%s\n", len(keyShare), hex.EncodeToString(keyShare))
+	prefix := bind(keyShare)
+	if len(prefix) == 0 {
+		return errors.New("quic: ClientRandomPrefixBind returned no bytes")
+	}
+	if len(prefix) > 32 {
+		prefix = prefix[:32]
+	}
+	fmt.Fprintf(os.Stderr, "[randbind][client] computed prefix=%s (patching into Random, was=%s)\n",
+		hex.EncodeToString(prefix), hex.EncodeToString(hello.Random[:len(prefix)]))
+	copy(hello.Random, prefix)
+	fmt.Fprintf(os.Stderr, "[randbind][client] Random after patch=%s\n", hex.EncodeToString(hello.Random))
+	return nil
+}
+
+// serializeKeyShares must byte-for-byte match its counterpart in sing-box's
+// common/tls/utls_client.go: the concatenated group(2)+length(2)+
+// key_exchange(length) entries of the key_share extension, with the leading
+// 2-byte client_shares list-length field stripped.
+func serializeKeyShares(shares []utls.KeyShare) []byte {
+	var buf []byte
+	for _, share := range shares {
+		var lenBytes [2]byte
+		binary.BigEndian.PutUint16(lenBytes[:], uint16(len(share.Data)))
+		var groupBytes [2]byte
+		binary.BigEndian.PutUint16(groupBytes[:], uint16(share.Group))
+		buf = append(buf, groupBytes[:]...)
+		buf = append(buf, lenBytes[:]...)
+		buf = append(buf, share.Data...)
+	}
+	return buf
 }
 
 // utlsConfigFromStd converts a crypto/tls client config into the uTLS

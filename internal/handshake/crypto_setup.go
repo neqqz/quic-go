@@ -27,6 +27,14 @@ var QUICVersionContextKey = &quicVersionContextKey{}
 
 const clientSessionStateRevision = 5
 
+// maxClientHelloAccumSize bounds how much Initial-level CRYPTO data
+// handleMessage will buffer while waiting for a complete ClientHello to
+// verify (see serverRandomBuf). Generous relative to any real ClientHello
+// (even a large one with a hybrid post-quantum key share tops out at a few
+// KB) — this exists to bound memory against a malformed/hostile declared
+// length, not to accommodate legitimately larger messages.
+const maxClientHelloAccumSize = 16 << 10
+
 type cryptoSetup struct {
 	tlsConf *tls.Config
 	conn    tlsQUICConn
@@ -63,8 +71,17 @@ type cryptoSetup struct {
 
 	serverRandomPrefix  []byte
 	serverRandomMask    []byte
-	serverRandomVerify  func(random [32]byte) bool
+	serverRandomVerify  func(random [32]byte, clientHello []byte) bool
 	serverRandomChecked bool
+	// serverRandomBuf accumulates Initial-level CRYPTO data across multiple
+	// handleMessage calls until a complete ClientHello is available to
+	// verify — see handleMessage below. A ClientHello carrying a large
+	// key_share (e.g. the hybrid X25519MLKEM768 entry ChromeParrot sends,
+	// ~1216 bytes on its own) routinely exceeds what fits in a single QUIC
+	// packet, so the crypto stream delivers it across more than one call;
+	// GetCryptoData (connection.go's handleCryptoFrame) hands over
+	// whatever bytes are available, not a complete handshake message.
+	serverRandomBuf []byte
 
 	aead          *updatableAEAD
 	has1RTTSealer bool
@@ -85,9 +102,10 @@ func NewCryptoSetupClient(
 	chromeParrot bool,
 	clientRandomPrefix []byte,
 	clientRandomMask []byte,
+	clientRandomPrefixBind func(keyShare []byte) []byte,
 	serverRandomPrefix []byte,
 	serverRandomMask []byte,
-	serverRandomVerify func(random [32]byte) bool,
+	serverRandomVerify func(random [32]byte, clientHello []byte) bool,
 	rttStats *utils.RTTStats,
 	qlogger qlogwriter.Recorder,
 	logger utils.Logger,
@@ -114,6 +132,12 @@ func NewCryptoSetupClient(
 	// during the client handshake is the ClientHello.random (true for both
 	// crypto/tls and uTLS ApplyPreset on a QUIC connection). Subsequent reads
 	// are left untouched so key shares, GREASE seeds, etc. stay random.
+	//
+	// Mutually exclusive with clientRandomPrefixBind below by construction —
+	// the caller (see common/tls's quicConfigWithRandom in the sing-box tree)
+	// clears clientRandomPrefix when it's using the bind path instead, so
+	// this wrapping — which fires before key_share exists — never fights
+	// with the later, key_share-aware overwrite.
 	if len(clientRandomPrefix) > 0 {
 		base := tlsConf.Rand
 		if base == nil {
@@ -127,7 +151,7 @@ func NewCryptoSetupClient(
 	}
 
 	if chromeParrot {
-		conn, err := newUTLSQUICClient(tlsConf)
+		conn, err := newUTLSQUICClient(tlsConf, clientRandomPrefixBind)
 		if err != nil {
 			return nil, err
 		}
@@ -194,7 +218,7 @@ func NewCryptoSetupServer(
 	allow0RTT bool,
 	serverRandomPrefix []byte,
 	serverRandomMask []byte,
-	serverRandomVerify func(random [32]byte) bool,
+	serverRandomVerify func(random [32]byte, clientHello []byte) bool,
 	rttStats *utils.RTTStats,
 	qlogger qlogwriter.Recorder,
 	logger utils.Logger,
@@ -318,27 +342,54 @@ func (h *cryptoSetup) HandleMessage(data []byte, encLevel protocol.EncryptionLev
 func (h *cryptoSetup) handleMessage(data []byte, encLevel protocol.EncryptionLevel) error {
 	if h.perspective == protocol.PerspectiveServer && encLevel == protocol.EncryptionInitial &&
 		(h.serverRandomVerify != nil || len(h.serverRandomPrefix) > 0) && !h.serverRandomChecked {
-		h.serverRandomChecked = true
-		if len(data) < 38 || data[0] != 0x01 {
-			return errors.New("client random validation: initial CRYPTO data is not a complete ClientHello")
+		// Accumulate across calls instead of requiring the whole ClientHello
+		// in one shot: a large key_share (ChromeParrot's hybrid
+		// X25519MLKEM768 entry alone is ~1216 bytes) routinely pushes the
+		// ClientHello past what fits in a single QUIC packet, and
+		// GetCryptoData hands over whatever bytes are available — not a
+		// complete handshake message — so the first call here often has
+		// only a prefix of it. Confirmed by reproducing locally: on an
+		// unmodified loopback connection (zero real packet loss) a
+		// ChromeParrot ClientHello with this key share still arrives
+		// across more than one handleMessage call.
+		h.serverRandomBuf = append(h.serverRandomBuf, data...)
+		buf := h.serverRandomBuf
+		if len(buf) > maxClientHelloAccumSize {
+			return errors.New("client random validation: ClientHello larger than expected")
 		}
-		var random [32]byte
-		copy(random[:], data[6:38])
-		if h.serverRandomVerify != nil {
-			if !h.serverRandomVerify(random) {
-				return errors.New("client random validation: mismatch")
+		if len(buf) >= 4 {
+			if buf[0] != 0x01 {
+				return errors.New("client random validation: initial CRYPTO data is not a ClientHello")
 			}
-		} else {
-			for i, expected := range h.serverRandomPrefix {
-				mask := byte(0xff)
-				if i < len(h.serverRandomMask) {
-					mask = h.serverRandomMask[i]
-				}
-				if random[i]&mask != expected&mask {
-					return errors.New("client random validation: mismatch")
+			declaredLen := int(buf[1])<<16 | int(buf[2])<<8 | int(buf[3])
+			totalLen := 4 + declaredLen
+			if len(buf) >= totalLen && len(buf) >= 38 {
+				h.serverRandomChecked = true
+				h.serverRandomBuf = nil // no longer needed, don't keep it around
+				var random [32]byte
+				copy(random[:], buf[6:38])
+				if h.serverRandomVerify != nil {
+					if !h.serverRandomVerify(random, buf[:totalLen]) {
+						return errors.New("client random validation: mismatch")
+					}
+				} else {
+					for i, expected := range h.serverRandomPrefix {
+						mask := byte(0xff)
+						if i < len(h.serverRandomMask) {
+							mask = h.serverRandomMask[i]
+						}
+						if random[i]&mask != expected&mask {
+							return errors.New("client random validation: mismatch")
+						}
+					}
 				}
 			}
+			// else: header says there's more to come — fall through to
+			// HandleData below as normal and wait for the rest on a later
+			// call, same as if this whole block weren't here yet.
 		}
+		// len(buf) < 4: haven't even got the handshake header yet, same
+		// "wait for more" fallthrough.
 	}
 	if err := h.conn.HandleData(encLevel.ToTLSEncryptionLevel(), data); err != nil {
 		return err
