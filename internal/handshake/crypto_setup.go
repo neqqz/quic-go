@@ -339,6 +339,16 @@ func (h *cryptoSetup) HandleMessage(data []byte, encLevel protocol.EncryptionLev
 	return nil
 }
 
+// ErrClientRandomRejected is returned (wrapped) when the server-side
+// ClientHello.Random check (ServerClientRandomPrefix / ServerClientRandomVerify)
+// fails, or when the first Initial flight is not a plausible ClientHello.
+//
+// The connection must then be dropped silently, without a CONNECTION_CLOSE:
+// answering a failed check with a rejected handshake tells an unauthenticated
+// prober that this UDP port runs a QUIC service with a secret (Hysteria2/TUIC-like),
+// whereas silence is indistinguishable from a closed or filtered port.
+var ErrClientRandomRejected = errors.New("client random validation failed")
+
 func (h *cryptoSetup) handleMessage(data []byte, encLevel protocol.EncryptionLevel) error {
 	if h.perspective == protocol.PerspectiveServer && encLevel == protocol.EncryptionInitial &&
 		(h.serverRandomVerify != nil || len(h.serverRandomPrefix) > 0) && !h.serverRandomChecked {
@@ -355,11 +365,11 @@ func (h *cryptoSetup) handleMessage(data []byte, encLevel protocol.EncryptionLev
 		h.serverRandomBuf = append(h.serverRandomBuf, data...)
 		buf := h.serverRandomBuf
 		if len(buf) > maxClientHelloAccumSize {
-			return errors.New("client random validation: ClientHello larger than expected")
+			return fmt.Errorf("%w: ClientHello larger than expected", ErrClientRandomRejected)
 		}
 		if len(buf) >= 4 {
 			if buf[0] != 0x01 {
-				return errors.New("client random validation: initial CRYPTO data is not a ClientHello")
+				return fmt.Errorf("%w: initial CRYPTO data is not a ClientHello", ErrClientRandomRejected)
 			}
 			declaredLen := int(buf[1])<<16 | int(buf[2])<<8 | int(buf[3])
 			totalLen := 4 + declaredLen
@@ -370,7 +380,7 @@ func (h *cryptoSetup) handleMessage(data []byte, encLevel protocol.EncryptionLev
 				copy(random[:], buf[6:38])
 				if h.serverRandomVerify != nil {
 					if !h.serverRandomVerify(random, buf[:totalLen]) {
-						return errors.New("client random validation: mismatch")
+						return fmt.Errorf("%w: mismatch", ErrClientRandomRejected)
 					}
 				} else {
 					for i, expected := range h.serverRandomPrefix {
@@ -379,7 +389,7 @@ func (h *cryptoSetup) handleMessage(data []byte, encLevel protocol.EncryptionLev
 							mask = h.serverRandomMask[i]
 						}
 						if random[i]&mask != expected&mask {
-							return errors.New("client random validation: mismatch")
+							return fmt.Errorf("%w: mismatch", ErrClientRandomRejected)
 						}
 					}
 				}
@@ -848,6 +858,13 @@ func (h *cryptoSetup) ConnectionState() ConnectionState {
 }
 
 func wrapError(err error) error {
+	// Keep the sentinel intact: Conn.setCloseError recognises it and drops the
+	// connection without any CONNECTION_CLOSE. Converting it into a
+	// TransportError here (as for every other error) would both lose the
+	// errors.Is link and put the reason string on the wire in cleartext.
+	if errors.Is(err, ErrClientRandomRejected) {
+		return err
+	}
 	if alertErr := tls.AlertError(0); errors.As(err, &alertErr) {
 		return qerr.NewLocalCryptoError(uint8(alertErr), err)
 	}

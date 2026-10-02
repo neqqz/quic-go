@@ -2195,6 +2195,11 @@ func (c *Conn) handleDatagramFrame(f *wire.DatagramFrame) error {
 }
 
 func (c *Conn) setCloseError(e *closeError) {
+	// A failed ClientHello.Random check is an unauthenticated prober: tear the
+	// connection down without sending anything, see handshake.ErrClientRandomRejected.
+	if e != nil && errors.Is(e.err, handshake.ErrClientRandomRejected) {
+		e.immediate = true
+	}
 	c.closeErr.CompareAndSwap(nil, e)
 	select {
 	case c.closeChan <- struct{}{}:
