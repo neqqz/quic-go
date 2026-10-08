@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	utls "github.com/metacubex/utls"
 	"github.com/sagernet/quic-go/internal/handshake"
 	"github.com/sagernet/quic-go/internal/protocol"
 	"github.com/sagernet/quic-go/qlogwriter"
@@ -205,6 +206,17 @@ type Config struct {
 	// Client side only; it has no effect on a listener. Because it pins the
 	// values above, settings that conflict with Chrome's are ignored.
 	ChromeParrot bool
+
+	// UTLSClientHelloID makes a client whose ChromeParrot is off emit the
+	// ClientHello of this uTLS fingerprint (adapted for QUIC: TLS 1.3 only,
+	// TCP-specific extensions removed, ALPN from tls.Config, quic-go's own
+	// transport parameters) via uTLS instead of crypto/tls. This is what makes
+	// ClientRandomPrefixBind work for non-Chrome fingerprints, and gives them a
+	// browser-like ClientHello instead of Go's. Transport parameters, packet
+	// sizes and Initial padding stay quic-go's: only the TLS layer is parroted.
+	// Ignored when ChromeParrot is set. Session resumption and 0-RTT are
+	// disabled on this path (see newUTLSQUICClient).
+	UTLSClientHelloID *utls.ClientHelloID
 
 	// ClientRandomPrefix sets the leading bytes of the TLS ClientHello random sent
 	// by a client. ClientRandomMask optionally selects which bits are replaced; a

@@ -167,6 +167,7 @@ func populateConfig(config *Config) *Config {
 		MaxDatagramFrameSize:             config.MaxDatagramFrameSize,
 		DisablePathManager:               config.DisablePathManager,
 		ChromeParrot:                     config.ChromeParrot,
+		UTLSClientHelloID:                config.UTLSClientHelloID,
 		ClientRandomPrefix:               config.ClientRandomPrefix,
 		ClientRandomMask:                 config.ClientRandomMask,
 		ClientRandomPrefixBind:           config.ClientRandomPrefixBind,

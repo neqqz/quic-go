@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	utls "github.com/metacubex/utls"
 	"github.com/sagernet/quic-go/internal/protocol"
 	"github.com/sagernet/quic-go/internal/qerr"
 	"github.com/sagernet/quic-go/internal/utils"
@@ -100,6 +101,7 @@ func NewCryptoSetupClient(
 	tlsConf *tls.Config,
 	enable0RTT bool,
 	chromeParrot bool,
+	utlsID *utls.ClientHelloID,
 	clientRandomPrefix []byte,
 	clientRandomMask []byte,
 	clientRandomPrefixBind func(keyShare []byte) []byte,
@@ -123,7 +125,8 @@ func NewCryptoSetupClient(
 
 	tlsConf = setupConfigForClient(tlsConf)
 	cs.tlsConf = tlsConf
-	cs.allow0RTT = enable0RTT && !chromeParrot
+	useUTLS := chromeParrot || utlsID != nil
+	cs.allow0RTT = enable0RTT && !useUTLS
 	cs.serverRandomPrefix = serverRandomPrefix
 	cs.serverRandomMask = serverRandomMask
 	cs.serverRandomVerify = serverRandomVerify
@@ -150,8 +153,18 @@ func NewCryptoSetupClient(
 		}
 	}
 
-	if chromeParrot {
-		conn, err := newUTLSQUICClient(tlsConf, clientRandomPrefixBind)
+	if useUTLS {
+		var spec *utls.ClientHelloSpec
+		if chromeParrot {
+			spec = chromeQUICClientHelloSpec(tlsConf.NextProtos)
+		} else {
+			var err error
+			spec, err = genericQUICClientHelloSpec(*utlsID, tlsConf.NextProtos)
+			if err != nil {
+				return nil, err
+			}
+		}
+		conn, err := newUTLSQUICClient(tlsConf, spec, clientRandomPrefixBind)
 		if err != nil {
 			return nil, err
 		}

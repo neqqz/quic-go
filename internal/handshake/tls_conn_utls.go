@@ -45,16 +45,15 @@ var _ tlsQUICConn = (*utlsQUICConn)(nil)
 // whatever is in Hello.Random at that point (ApplyPreset special-cases an
 // already-32-byte Random as "keep it" rather than regenerating it, which is
 // what makes patching it here stick — see its "case 32" branch).
-func newUTLSQUICClient(tlsConf *tls.Config, clientRandomPrefixBind func(keyShare []byte) []byte) (*utlsQUICConn, error) {
+func newUTLSQUICClient(tlsConf *tls.Config, spec *utls.ClientHelloSpec, clientRandomPrefixBind func(keyShare []byte) []byte) (*utlsQUICConn, error) {
 	uConf, err := utlsConfigFromStd(tlsConf)
 	if err != nil {
 		return nil, err
 	}
-	spec := chromeQUICClientHelloSpec(tlsConf.NextProtos)
 
 	conn := utls.UQUICClient(&utls.QUICConfig{TLSConfig: uConf}, utls.HelloCustom)
 	if err := conn.ApplyPreset(spec); err != nil {
-		return nil, fmt.Errorf("applying Chrome ClientHello spec: %w", err)
+		return nil, fmt.Errorf("applying ClientHello spec: %w", err)
 	}
 	if clientRandomPrefixBind != nil {
 		if err := patchClientRandomFromKeyShare(conn, spec, clientRandomPrefixBind); err != nil {
