@@ -26,8 +26,9 @@ import (
 //   - Extensions that are TLS<=1.2 / TCP only or stateful are dropped:
 //     session_ticket, extended_master_secret, renegotiation_info,
 //     ec_point_formats, padding, status_request_v2, NPN, channel_id,
-//     token_binding, cookie and any pre_shared_key (resumption is disabled on
-//     this path).
+//     token_binding, cookie and any pre_shared_key from the TCP spec. A fresh
+//     pre_shared_key placeholder is appended as the last extension, which uTLS
+//     fills in when a cached session exists and omits otherwise.
 //   - ALPN (and ALPS, if present) are taken from the caller's tls.Config.
 //   - A quic_transport_parameters extension is appended if the spec has none;
 //     its contents are filled in later from quic-go's own parameters.
@@ -103,6 +104,14 @@ func genericQUICClientHelloSpec(id utls.ClientHelloID, alpn []string) (*utls.Cli
 	}
 	if !hasQTP {
 		exts = append(exts, &utls.QUICTransportParametersExtension{})
+	}
+	// A PSK offer needs psk_key_exchange_modes next to it; only browsers'
+	// TLS 1.3 hellos carry that, so skip the placeholder if the spec lacks it.
+	for _, ext := range exts {
+		if _, ok := ext.(*utls.PSKKeyExchangeModesExtension); ok {
+			exts = append(exts, &utls.UtlsPreSharedKeyExtension{})
+			break
+		}
 	}
 	spec.Extensions = exts
 	return &spec, nil

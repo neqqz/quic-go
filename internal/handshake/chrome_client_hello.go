@@ -21,7 +21,7 @@ func chromeQUICClientHelloSpec(alpn []string) *utls.ClientHelloSpec {
 	if len(alpn) == 0 {
 		alpn = []string{"h3"}
 	}
-	return &utls.ClientHelloSpec{
+	spec := &utls.ClientHelloSpec{
 		// No GREASE suite here, unlike the TCP hello.
 		CipherSuites: []uint16{
 			utls.TLS_AES_128_GCM_SHA256,
@@ -73,4 +73,10 @@ func chromeQUICClientHelloSpec(alpn []string) *utls.ClientHelloSpec {
 			utls.BoringGREASEECH(),
 		}),
 	}
+	// pre_shared_key must be the last extension. It is only emitted when a
+	// cached session is available (utls.Config.OmitEmptyPsk drops it otherwise),
+	// so a first connection looks like Chrome's first connection and a reconnect
+	// like Chrome's resumed one.
+	spec.Extensions = append(spec.Extensions, &utls.UtlsPreSharedKeyExtension{})
+	return spec
 }

@@ -93,13 +93,15 @@ var _ CryptoSetup = &cryptoSetup{}
 
 // NewCryptoSetupClient creates a new crypto setup for the client
 // chromeParrot makes the client emit Chrome's TLS ClientHello via uTLS instead of
-// crypto/tls. It forces enable0RTT off: see newUTLSQUICClient for why resumption
-// can't be carried across the two TLS stacks.
+// crypto/tls. 0-RTT is always off on that path (see newUTLSQUICClient); ordinary
+// session resumption works through uTLS's own session cache, keyed by server
+// name and remoteAddr.
 func NewCryptoSetupClient(
 	connID protocol.ConnectionID,
 	tp *wire.TransportParameters,
 	tlsConf *tls.Config,
 	enable0RTT bool,
+	remoteAddr string,
 	chromeParrot bool,
 	utlsID *utls.ClientHelloID,
 	clientRandomPrefix []byte,
@@ -164,7 +166,7 @@ func NewCryptoSetupClient(
 				return nil, err
 			}
 		}
-		conn, err := newUTLSQUICClient(tlsConf, spec, clientRandomPrefixBind)
+		conn, err := newUTLSQUICClient(tlsConf, spec, clientRandomPrefixBind, remoteAddr)
 		if err != nil {
 			return nil, err
 		}

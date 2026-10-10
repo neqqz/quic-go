@@ -500,6 +500,7 @@ var newClientConnection = func(
 		params,
 		tlsConf,
 		enable0RTT,
+		conn.RemoteAddr().String(),
 		s.config.ChromeParrot,
 		s.config.UTLSClientHelloID,
 		s.config.ClientRandomPrefix,
