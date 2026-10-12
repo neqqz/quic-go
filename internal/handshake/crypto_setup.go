@@ -388,7 +388,16 @@ func (h *cryptoSetup) handleMessage(data []byte, encLevel protocol.EncryptionLev
 			}
 			declaredLen := int(buf[1])<<16 | int(buf[2])<<8 | int(buf[3])
 			totalLen := 4 + declaredLen
-			if len(buf) >= totalLen && len(buf) >= 38 {
+			// Reject early: an oversized declared length would otherwise keep the
+			// connection waiting for data that never comes, and a message too short
+			// to hold a Random would skip the check and get a visible TLS alert.
+			if totalLen > maxClientHelloAccumSize {
+				return fmt.Errorf("%w: ClientHello larger than expected", ErrClientRandomRejected)
+			}
+			if totalLen < 38 {
+				return fmt.Errorf("%w: ClientHello too short", ErrClientRandomRejected)
+			}
+			if len(buf) >= totalLen {
 				h.serverRandomChecked = true
 				h.serverRandomBuf = nil // no longer needed, don't keep it around
 				var random [32]byte

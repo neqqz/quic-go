@@ -206,6 +206,14 @@ func (p *packetPacker) pickExtraPacketPadding(currentSize, maxPacketSize protoco
 	return padding
 }
 
+// extraShortHeaderPadding returns the Config.ExtraPacketPaddingMin/Max padding for a
+// standalone 1-RTT packet. It is not used for packets coalesced behind a long header
+// packet: their maxPacketSize is the whole datagram, so the room left would be overstated.
+func (p *packetPacker) extraShortHeaderPadding(connID protocol.ConnectionID, pnLen protocol.PacketNumberLen, pl payload, s sealer, maxPacketSize protocol.ByteCount) protocol.ByteCount {
+	size := p.shortHeaderPacketLength(connID, pnLen, pl) + protocol.ByteCount(s.Overhead())
+	return p.pickExtraPacketPadding(size, maxPacketSize)
+}
+
 // noCoalescing reports whether the packet being packed has to go out in a
 // datagram of its own. The imitated client never coalesces: every datagram it
 // sends carries exactly one encryption level, so its Initial ACK travels alone,
@@ -561,7 +569,7 @@ func (p *packetPacker) appendPacket(
 	}
 	kp := sealer.KeyPhase()
 
-	return p.appendShortHeaderPacket(buf, connID, pn, pnLen, kp, pl, 0, maxPacketSize, sealer, false, v)
+	return p.appendShortHeaderPacket(buf, connID, pn, pnLen, kp, pl, p.extraShortHeaderPadding(connID, pnLen, pl, sealer, maxPacketSize), maxPacketSize, sealer, false, v)
 }
 
 func (p *packetPacker) maybeGetCryptoPacket(
@@ -903,7 +911,7 @@ func (p *packetPacker) packPTOProbePacket1RTT(maxPacketSize protocol.ByteCount, 
 	}
 	buffer := getPacketBuffer()
 	packet := &coalescedPacket{buffer: buffer}
-	shp, err := p.appendShortHeaderPacket(buffer, connID, pn, pnLen, kp, pl, 0, maxPacketSize, s, false, v)
+	shp, err := p.appendShortHeaderPacket(buffer, connID, pn, pnLen, kp, pl, p.extraShortHeaderPadding(connID, pnLen, pl, s, maxPacketSize), maxPacketSize, s, false, v)
 	if err != nil {
 		buffer.Release()
 		return nil, err
