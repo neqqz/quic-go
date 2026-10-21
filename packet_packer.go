@@ -142,8 +142,6 @@ type packetPacker struct {
 	// chaosProtection applies Chrome's chaos protection to Initial packets.
 	// See appendChaosProtectedPayload.
 	chaosProtection bool
-	extraPaddingMin protocol.ByteCount
-	extraPaddingMax protocol.ByteCount
 }
 
 const DatagramFrameMaxPeekTimes = 10
@@ -163,8 +161,6 @@ func newPacketPacker(
 	datagramQueue *datagramQueue,
 	perspective protocol.Perspective,
 	chaosProtection bool,
-	extraPaddingMin int,
-	extraPaddingMax int,
 ) *packetPacker {
 	var b [16]byte
 	_, _ = crand.Read(b[:])
@@ -183,35 +179,7 @@ func newPacketPacker(
 		acks:                acks,
 		rand:                *rand.New(rand.NewPCG(binary.BigEndian.Uint64(b[:8]), binary.BigEndian.Uint64(b[8:]))),
 		pnManager:           packetNumberManager,
-		extraPaddingMin:     protocol.ByteCount(extraPaddingMin),
-		extraPaddingMax:     protocol.ByteCount(extraPaddingMax),
 	}
-}
-
-func (p *packetPacker) pickExtraPacketPadding(currentSize, maxPacketSize protocol.ByteCount) protocol.ByteCount {
-	if p.extraPaddingMax <= 0 {
-		return 0
-	}
-	room := maxPacketSize - currentSize
-	if room <= 0 {
-		return 0
-	}
-	padding := p.extraPaddingMin
-	if p.extraPaddingMax > p.extraPaddingMin {
-		padding += protocol.ByteCount(p.rand.IntN(int(p.extraPaddingMax-p.extraPaddingMin) + 1))
-	}
-	if padding > room {
-		return room
-	}
-	return padding
-}
-
-// extraShortHeaderPadding returns the Config.ExtraPacketPaddingMin/Max padding for a
-// standalone 1-RTT packet. It is not used for packets coalesced behind a long header
-// packet: their maxPacketSize is the whole datagram, so the room left would be overstated.
-func (p *packetPacker) extraShortHeaderPadding(connID protocol.ConnectionID, pnLen protocol.PacketNumberLen, pl payload, s sealer, maxPacketSize protocol.ByteCount) protocol.ByteCount {
-	size := p.shortHeaderPacketLength(connID, pnLen, pl) + protocol.ByteCount(s.Overhead())
-	return p.pickExtraPacketPadding(size, maxPacketSize)
 }
 
 // noCoalescing reports whether the packet being packed has to go out in a
@@ -569,7 +537,7 @@ func (p *packetPacker) appendPacket(
 	}
 	kp := sealer.KeyPhase()
 
-	return p.appendShortHeaderPacket(buf, connID, pn, pnLen, kp, pl, p.extraShortHeaderPadding(connID, pnLen, pl, sealer, maxPacketSize), maxPacketSize, sealer, false, v)
+	return p.appendShortHeaderPacket(buf, connID, pn, pnLen, kp, pl, 0, maxPacketSize, sealer, false, v)
 }
 
 func (p *packetPacker) maybeGetCryptoPacket(
@@ -911,7 +879,7 @@ func (p *packetPacker) packPTOProbePacket1RTT(maxPacketSize protocol.ByteCount, 
 	}
 	buffer := getPacketBuffer()
 	packet := &coalescedPacket{buffer: buffer}
-	shp, err := p.appendShortHeaderPacket(buffer, connID, pn, pnLen, kp, pl, p.extraShortHeaderPadding(connID, pnLen, pl, s, maxPacketSize), maxPacketSize, s, false, v)
+	shp, err := p.appendShortHeaderPacket(buffer, connID, pn, pnLen, kp, pl, 0, maxPacketSize, s, false, v)
 	if err != nil {
 		buffer.Release()
 		return nil, err

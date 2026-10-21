@@ -258,11 +258,6 @@ type Config struct {
 	ServerClientRandomPrefix []byte
 	ServerClientRandomMask   []byte
 	ServerClientRandomVerify func(random [32]byte, clientHello []byte) bool
-
-	// ExtraPacketPaddingMin and ExtraPacketPaddingMax add a random number of
-	// PADDING bytes to outgoing packets when room is available.
-	ExtraPacketPaddingMin int
-	ExtraPacketPaddingMax int
 }
 
 // ClientInfo contains information about an incoming connection attempt.

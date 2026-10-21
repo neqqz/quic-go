@@ -63,12 +63,6 @@ func validateConfig(config *Config) error {
 	if len(config.ServerClientRandomMask) > 32 {
 		return fmt.Errorf("ServerClientRandomMask must not exceed 32 bytes")
 	}
-	if config.ExtraPacketPaddingMin < 0 {
-		return fmt.Errorf("ExtraPacketPaddingMin must not be negative")
-	}
-	if config.ExtraPacketPaddingMax < config.ExtraPacketPaddingMin {
-		return fmt.Errorf("ExtraPacketPaddingMax must not be smaller than ExtraPacketPaddingMin")
-	}
 	return nil
 }
 
@@ -174,7 +168,5 @@ func populateConfig(config *Config) *Config {
 		ServerClientRandomPrefix:         config.ServerClientRandomPrefix,
 		ServerClientRandomMask:           config.ServerClientRandomMask,
 		ServerClientRandomVerify:         config.ServerClientRandomVerify,
-		ExtraPacketPaddingMin:            config.ExtraPacketPaddingMin,
-		ExtraPacketPaddingMax:            config.ExtraPacketPaddingMax,
 	}
 }
