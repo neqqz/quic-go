@@ -147,10 +147,10 @@ func (c *cubicSender) OnPacketSent(
 	bytes protocol.ByteCount,
 	isRetransmittable bool,
 ) {
-	c.pacer.SentPacket(sentTime, bytes)
 	if !isRetransmittable {
 		return
 	}
+	c.pacer.SentPacket(sentTime, bytes)
 	c.largestSentPacketNumber = packetNumber
 	c.hybridSlowStart.OnPacketSent(packetNumber)
 }
